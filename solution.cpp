@@ -7,7 +7,7 @@ using namespace std;
 
 class API;
 
-#define MAP_SIZE 100
+#define MAP_SIZE 200
 #define FIRE_DISTANCE 3
 #define ACTION_HISTORY_LENGTH 10
 
