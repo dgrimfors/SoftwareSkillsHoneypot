@@ -7,10 +7,29 @@ using namespace std;
 
 class API;
 
-#define MAP_SIZE 200
+#define MAP_SIZE 100
 #define FIRE_DISTANCE 3
 #define ACTION_HISTORY_LENGTH 10
 
+enum RelativeDirection
+{
+  FRONT = 0,
+  RIGHT = 1,
+  BACK = 2,
+  LEFT = 3,
+  RELDIR_MAX = 4
+};
+
+enum Action
+{
+  WAIT,
+  COVER,
+  FIRE,
+  TURN_LEFT,
+  TURN_RIGHT,
+  MOVE_FORWARD,
+  MOVE_BACKWARD
+};
 
 enum MapValue
 {
@@ -30,17 +49,14 @@ enum Direction
   DIR_MAX = 4
 };
 
-char MapValueStrings[][10] = {"Unknown", "Empty", "Block", "Wall", "Drone"};
-char RelDirStrings[][10] = {"Front", "Right", "Back", "Left"};
-char DirStrings[][10] = {"North", "East", "South", "West"};
+struct Point{
+  int x;
+  int y;
+};
 
-enum RelativeDirection
-{
-  FRONT = 0,
-  RIGHT = 1,
-  BACK = 2,
-  LEFT = 3,
-  RELDIR_MAX = 4
+struct RelativePoint{
+  RelativeDirection direction;
+  int distance;
 };
 
 struct Target{
@@ -49,16 +65,9 @@ struct Target{
   MapValue type;
 };
 
-enum Action
-{
-  WAIT,
-  COVER,
-  FIRE,
-  TURN_LEFT,
-  TURN_RIGHT,
-  MOVE_FORWARD,
-  MOVE_BACKWARD
-};
+char MapValueStrings[][10] = {"Unknown", "Empty", "Block", "Wall", "Drone"};
+char RelDirStrings[][10] = {"Front", "Right", "Back", "Left"};
+char DirStrings[][10] = {"North", "East", "South", "West"};
 
 class Solution {
   int posX = MAP_SIZE/2;
@@ -80,6 +89,10 @@ class Solution {
     Action actionHistory[ACTION_HISTORY_LENGTH];
     unsigned int lastActionIndex = 0;
     
+    bool chasingTarget = false;
+    Point chasingTargetLocation;
+    int ambushingTargetTimer = 0;
+    
  public:
   Solution() {
     // If you need initialization code, you can write it here!
@@ -97,6 +110,50 @@ class Solution {
     timeSinceAttacked = 999;
     COVERTIME = estimatedFuel / 10;
     COVERTIME = COVERTIME > 50 ? 50 : COVERTIME;
+  }
+  
+  RelativePoint globalAbsToLocalRel(Point target)
+  {
+    int diffX = target.x - posX;
+    int diffY = target.y - posY;
+    Direction dir;
+    int distance;
+    RelativePoint relPoint;
+    
+    //Either diffX or diffY should be 0, otherwise no RelativePoint exist, but we will make one anyway
+    if(diffX != 0)
+    {
+      dir = diffX < 0 ? WEST : EAST;
+      distance = diffX < 0 ? -diffX : diffX;
+    }
+    else if(diffY != 0)
+    {
+      dir = diffY < 0 ? SOUTH : NORTH;
+      distance = diffY < 0 ? -diffY : diffY;
+    }
+    else
+    {
+      dir = NORTH;
+      distance = 0;
+    }
+    
+    relPoint.direction = (RelativeDirection) ((dir + (DIR_MAX - currentDir)) % RELDIR_MAX);
+    relPoint.distance = distance;
+    
+    return relPoint;
+  }
+  
+  Point localRelToGlobalAbs(RelativePoint relPoint)
+  {
+    Point point;
+    Direction dir;
+    
+    dir = (Direction) ((currentDir + relPoint.direction)  % DIR_MAX);
+    
+    point.x = posX + ((dir == EAST) ? relPoint.distance : ((dir == WEST) ? -relPoint.distance : 0));
+    point.y = posY + ((dir == NORTH) ? relPoint.distance : ((dir == SOUTH) ? -relPoint.distance : 0));
+    
+    return point;
   }
   
   //Returns true if target available, false otherwise, fills target struct if true
@@ -409,6 +466,8 @@ class Solution {
     actionHistory[lastActionIndex] = COVER;
   }
   
+  
+  
   /**
    * Executes a single step of the tank's programming. The tank can only move, 
    * turn, or fire its cannon once per turn. Between each update, the tank's 
@@ -469,6 +528,7 @@ class Solution {
     {
       if(((allTargets[LEFT].type == DRONE && allTargets[LEFT].distance < 3) || (allTargets[RIGHT].type == DRONE && allTargets[RIGHT].distance < 3)) && (allTargets[BACK].type != DRONE && allTargets[BACK].distance > 1))
       {
+        printf("Retreat\n");
         moveBack();
       }
       else if(API::identifyTarget() && API::lidarFront() <= 2)
@@ -513,6 +573,7 @@ class Solution {
     //Continue retreating?
     else if(actionHistory[lastActionIndex] == MOVE_BACKWARD && timeSinceAttacked <= 4 && (allTargets[BACK].type != DRONE && allTargets[BACK].distance > 1))
     {
+      printf("Continue retreat\n");
        moveBack();
     }
     //Not attacked. 
@@ -528,17 +589,69 @@ class Solution {
     {
       if(((allTargets[LEFT].type == DRONE && allTargets[LEFT].distance < 3) || (allTargets[RIGHT].type == DRONE && allTargets[RIGHT].distance < 3)) && (allTargets[BACK].type != DRONE && allTargets[BACK].distance > 1))
       {
+        printf("Avoid ambush\n");
+        chasingTarget = false;
         moveBack();
       }
-      else if(foundTarget)
+      else if(ambushingTargetTimer > 0)
       {
-        printf("Aqcuired target\n");
+        if(ambushingTargetTimer > 0)
+        {
+          printf("Laying ambush\n");
+          ambushingTargetTimer--;
+          if(API::identifyTarget() && API::lidarFront() <= FIRE_DISTANCE)
+          {
+            fireCannon();
+            ambushingTargetTimer = 0;
+          }
+          else
+          {
+            cover();
+          }
+        }
+      }
+      else if(chasingTarget && globalAbsToLocalRel(chasingTargetLocation).distance == 1 && globalAbsToLocalRel(chasingTargetLocation).direction == FRONT)
+      {
+        chasingTarget = false;
+        ambushingTargetTimer = 5;
+        printf("Reached target coordinates\n");
+        if(API::identifyTarget() && API::lidarFront() <= FIRE_DISTANCE)
+        {
+          fireCannon();
+          chasingTarget = false;
+          ambushingTargetTimer = 0;
+        }
+        else
+        {
+          cover();
+        }
+      }
+      else if(chasingTarget || foundTarget)
+      {
+        if(chasingTarget && !(foundTarget && target.distance < FIRE_DISTANCE))
+        {
+          RelativePoint chasedTargetRelative = globalAbsToLocalRel(chasingTargetLocation);
+          printf("Chasing target at %s %d\n", RelDirStrings[chasedTargetRelative.direction], chasedTargetRelative.distance);
+          target.distance = chasedTargetRelative.distance;
+          target.direction = chasedTargetRelative.direction;
+        }
+        else
+        {
+          RelativePoint chasedTargetRelative;
+          chasedTargetRelative.direction = target.direction;
+          chasedTargetRelative.distance = target.distance; 
+          printf("Aqcuired new target at %s %d\n", RelDirStrings[chasedTargetRelative.direction], chasedTargetRelative.distance);
+          chasingTargetLocation = localRelToGlobalAbs(chasedTargetRelative); 
+          chasingTarget = true;
+        }
+        
         switch(target.direction)
         {
           case FRONT:
-            if(target.distance <= FIRE_DISTANCE || target.distance < targetDistance)
+            if(allTargets[FRONT].type == DRONE && (allTargets[FRONT].distance <= FIRE_DISTANCE || allTargets[FRONT].distance < targetDistance))
             {
                 fireCannon();
+                chasingTarget = false;
             }
             else if(coveringTimer < COVERTIME && hasGoodCover())
             {
@@ -567,20 +680,6 @@ class Solution {
               turnRight();
             }
             break;
-        }
-      }
-      else if(API::identifyTarget())
-      {
-        if((API::lidarFront() < targetDistance) || API::lidarFront() <= FIRE_DISTANCE)
-        {
-          fireCannon();
-          targetDistance = 0;
-        }
-        else
-        {
-          printf("Approach target\n");
-          API::moveForward();
-          targetDistance = API::lidarFront();
         }
       }
       else //Explore
